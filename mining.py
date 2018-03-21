@@ -7,9 +7,12 @@ import random
 import statistics
 import sys
 import time
+import numpy, matplotlib
 from collections import namedtuple
 from functools import partial
 from operator import attrgetter
+matplotlib.use('qt5agg')
+import matplotlib.pyplot as plt
 
 def bits_to_target(bits):
     size = bits >> 24
@@ -94,8 +97,25 @@ def print_headers():
     print(', '.join(['Height', 'FX', 'Block Time', 'Unix', 'Timestamp',
                      'Difficulty (bn)', 'Implied Difficulty (bn)',
                      'Hashrate (PH/s)', 'Rev Ratio', 'Greedy?', 'Comments']))
+def new_print_state():
+    state = states[-1]
+    block_time = state.timestamp - states[-2].timestamp
+    t = datetime.datetime.fromtimestamp(state.timestamp)
+    difficulty = TARGET_1 / bits_to_target(state.bits)
+    implied_diff = TARGET_1 / ((2 << 255) / (state.hashrate * 1e15 * IDEAL_BLOCK_TIME))
+    print(', '.join(['{:d}'.format(state.height),
+                     '{:.8f}'.format(state.fx),
+                     '{:d}'.format(block_time),
+                     '{:d}'.format(state.timestamp),
+                     '{:%Y-%m-%d %H:%M:%S}'.format(t),
+                     '{:.2f}'.format(difficulty / 1e9),
+                     '{:.2f}'.format(implied_diff / 1e9),
+                     '{:.0f}'.format(state.hashrate),
+                     '{:.3f}'.format(state.rev_ratio)
+                     ]))
 
-def old_print_state():
+    
+def print_state():
     state = states[-1]
     block_time = state.timestamp - states[-2].timestamp
     t = datetime.datetime.fromtimestamp(state.timestamp)
@@ -113,22 +133,15 @@ def old_print_state():
                      'Yes' if state.greedy_frac == 1.0 else 'No',
                      state.msg]))
     
-def print_state():
+def plot_state():
     state = states[-1]
     block_time = state.timestamp - states[-2].timestamp
     t = datetime.datetime.fromtimestamp(state.timestamp)
     difficulty = TARGET_1 / bits_to_target(state.bits)
     implied_diff = TARGET_1 / ((2 << 255) / (state.hashrate * 1e15 * IDEAL_BLOCK_TIME))
-    print(', '.join(['{:d}'.format(state.height),
-                     '{:.8f}'.format(state.fx),
-                     '{:d}'.format(block_time),
-                     '{:d}'.format(state.timestamp),
-                     '{:%Y-%m-%d %H:%M:%S}'.format(t),
-                     '{:.2f}'.format(difficulty / 1e9),
-                     '{:.2f}'.format(implied_diff / 1e9),
-                     '{:.0f}'.format(state.hashrate),
-                     '{:.3f}'.format(state.rev_ratio)
-                     ]))
+    #return difficulty
+    #print("block_time=",block_time)
+    return block_time
 
 def revenue_ratio(fx, BCC_target):
     '''Returns the instantaneous SWC revenue rate divided by the
@@ -595,7 +608,7 @@ Scenarios = {
     'ft100' : Scenario(next_fx_random, {}, -100, 0),
 }
 
-def run_one_simul(algo, scenario, print_it):
+def run_one_simul(algo, scenario, print_it, plot_it):
     states.clear()
 
     # Initial state is afer 2020 steady prefix blocks
@@ -616,17 +629,24 @@ def run_one_simul(algo, scenario, print_it):
 
     # Run the simulation
     if print_it:       print_headers()
-    for n in range(10000):
+
+    samples = 10000
+    diff = numpy.zeros(samples)
+    
+    for n in range(samples):
         fx_jump_factor = fx_jumps.get(n, 1.0)
         next_step(algo, scenario, fx_jump_factor)
-        #if print_it:            print_state()
+        if print_it:
+            print_state()
+        elif plot_it:
+            diff[n] = plot_state()
 
     # Drop the prefix blocks to be left with the simulation blocks
     simul = states[N:]
 
     block_times = [simul[n + 1].timestamp - simul[n].timestamp
                    for n in range(len(simul) - 1)]
-    return block_times
+    return (block_times,diff)
 
 
 def main():
@@ -635,7 +655,7 @@ def main():
     parser = argparse.ArgumentParser('Run a mining simulation')
     parser.add_argument('-a', '--algo', metavar='algo', type=str,
                         choices = list(Algos.keys()),
-                        default = 'k-1', help='algorithm choice')
+                        default = 'wtema-100', help='algorithm choice')
     parser.add_argument('-s', '--scenario', metavar='scenario', type=str,
                         choices = list(Scenarios.keys()),
                         default = 'default', help='scenario choice')
@@ -657,14 +677,33 @@ def main():
     std_devs = []
     medians = []
     maxs = []
+
+    plot_it = True
+    count = 1
+    save_algo = algo
+    #algo = Algos.get('dgw3-24')
+    other_title = args.algo
+    graph_type = args.scenario
+    
     for loop in range(count):
         random.seed(seed)
-        seed += 1
-        block_times = run_one_simul(algo, scenario, count == 1)
+        #seed += 1
+        (block_times,diff_data) = run_one_simul(algo, scenario, count < 1, plot_it)
         means.append(statistics.mean(block_times))
         std_devs.append(statistics.stdev(block_times))
         medians.append(sorted(block_times)[len(block_times) // 2])
         maxs.append(max(block_times))
+
+        if (loop == 0):
+            plt.plot(diff_data,'r',label='dgw3-24')
+        else:
+            plt.plot(diff_data,'g',label=other_title)
+        algo = save_algo
+
+    plt.legend()
+    plt.grid()
+    plt.title(graph_type)
+    plt.show()
 
     def stats(text, values):
         if count == 1:
